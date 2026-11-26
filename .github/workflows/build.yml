@@ -14,9 +14,9 @@ jobs:
       matrix:
         include:
           - os: windows-latest
-            artifact: Premiere-to-FCPX-Windows.zip
+            artifact: KADA-XML-Windows.zip
           - os: macos-latest
-            artifact: Premiere-to-FCPX-macOS.zip
+            artifact: KADA-XML-macOS.zip
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
@@ -27,13 +27,13 @@ jobs:
       - name: Test
         run: python tests/test_convert.py
       - name: Build
-        run: pyinstaller --noconfirm --windowed --onefile --name "Premiere-to-FCPX" app.py
+        run: pyinstaller --noconfirm --windowed --onefile --name "KADA-XML" app.py
       - name: Zip (Windows)
         if: runner.os == 'Windows'
-        run: Compress-Archive -Path dist/Premiere-to-FCPX.exe -DestinationPath ${{ matrix.artifact }}
+        run: Compress-Archive -Path dist/KADA-XML.exe -DestinationPath ${{ matrix.artifact }}
       - name: Zip (macOS)
         if: runner.os == 'macOS'
-        run: cd dist && ditto -c -k --keepParent Premiere-to-FCPX.app ../${{ matrix.artifact }}
+        run: cd dist && ditto -c -k --keepParent KADA-XML.app ../${{ matrix.artifact }}
       - uses: actions/upload-artifact@v4
         with:
           name: ${{ matrix.artifact }}

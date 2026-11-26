@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Premiere -> FCPX: small window app (tkinter, standard library only)."""
+"""KADA XML - Premiere -> FCPX: small window app (tkinter, standard library only)."""
 import os
 import sys
 import subprocess
@@ -12,7 +12,7 @@ import premiere_to_fcpxml as core
 class App(tk.Tk):
     def __init__(self):
         super().__init__()
-        self.title(f"Premiere → Final Cut Pro X  v{core.__version__}")
+        self.title(f"KADA XML  v{core.__version__}  ·  Premiere → Final Cut Pro X")
         self.minsize(640, 0)
         self.src = tk.StringVar()
         self.dst = tk.StringVar()
@@ -87,7 +87,7 @@ class App(tk.Tk):
     def run(self):
         src, dst = self.src.get().strip(), self.dst.get().strip()
         if not src or not os.path.isfile(src):
-            messagebox.showwarning("Premiere → FCPX", "Önce XML dosyasını seç.\nPick the XML file first.")
+            messagebox.showwarning("KADA XML", "Önce XML dosyasını seç.\nPick the XML file first.")
             return
         if not dst:
             dst = os.path.splitext(src)[0] + '.fcpxml'
@@ -101,7 +101,7 @@ class App(tk.Tk):
             self.say(f"Beklenmeyen hata / unexpected error: {e!r}", clear=True)
             return
         self.say("Tamam / Done\n" + core.format_report(r), clear=True)
-        if messagebox.askyesno("Premiere → FCPX", "Hazır. Klasörü açayım mı?\nDone. Open the folder?"):
+        if messagebox.askyesno("KADA XML", "Hazır. Klasörü açayım mı?\nDone. Open the folder?"):
             folder = os.path.dirname(os.path.abspath(dst))
             if sys.platform == 'win32':
                 os.startfile(folder)

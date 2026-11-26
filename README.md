@@ -1,15 +1,15 @@
-# Premiere → Final Cut Pro X
+# KADA XML
 
-Premiere Pro sekanslarını Final Cut Pro X'e (FCPXML) taşıyan küçük, ücretsiz bir program.
+**Premiere → Final Cut Pro X.** Premiere Pro sekanslarını Final Cut Pro X'e (FCPXML) taşıyan küçük, ücretsiz bir program.
 Windows ve Mac'te çalışır, kurulum gerektirmez.
 
-*A small free tool that moves Premiere Pro sequences into Final Cut Pro X (FCPXML). English below.*
+*KADA XML is a small free tool that moves Premiere Pro sequences into Final Cut Pro X (FCPXML). English below.*
 
 ## İndir
 
 [Releases](../../releases) sayfasından:
-- **Windows:** `Premiere-to-FCPX-Windows.zip` → içindeki `.exe`
-- **Mac:** `Premiere-to-FCPX-macOS.zip` → `Premiere-to-FCPX.app`
+- **Windows:** `KADA-XML-Windows.zip` → içindeki `.exe`
+- **Mac:** `KADA-XML-macOS.zip` → `KADA-XML.app`
   (imzasız olduğu için ilk açılışta: sağ tık → **Aç**)
 
 ## Kullanım

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Premiere Pro "Final Cut Pro XML" (FCP7 xmeml) -> Final Cut Pro X FCPXML 1.10.
+"""KADA XML - Premiere Pro "Final Cut Pro XML" (FCP7 xmeml) -> Final Cut Pro X FCPXML 1.10.
 
 Command line:
   python premiere_to_fcpxml.py INPUT.xml OUTPUT.fcpxml [--from "E:/Media"] [--to "/Volumes/Disk/Media"]
@@ -400,7 +400,7 @@ def main(argv=None):
         sys.stdout.reconfigure(encoding='utf-8')
     except Exception:
         pass
-    ap = argparse.ArgumentParser(description="Premiere FCP7 XML -> Final Cut Pro X FCPXML")
+    ap = argparse.ArgumentParser(description="KADA XML: Premiere FCP7 XML -> Final Cut Pro X FCPXML")
     ap.add_argument('src', help='Premiere: File > Export > Final Cut Pro XML')
     ap.add_argument('dst', nargs='?', help='output .fcpxml (default: next to input)')
     ap.add_argument('--from', dest='frm', default=None,
