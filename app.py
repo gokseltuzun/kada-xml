@@ -14,6 +14,12 @@ class App(tk.Tk):
         super().__init__()
         self.title(f"KADA XML  v{core.__version__}  ·  Premiere → Final Cut Pro X")
         self.minsize(640, 0)
+        try:  # window icon (works from source and from the PyInstaller bundle)
+            base = getattr(sys, '_MEIPASS', os.path.dirname(os.path.abspath(__file__)))
+            self._icon = tk.PhotoImage(file=os.path.join(base, 'assets', 'icon.png'))
+            self.iconphoto(True, self._icon)
+        except Exception:
+            pass
         self.src = tk.StringVar()
         self.dst = tk.StringVar()
         self.frm = tk.StringVar()

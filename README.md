@@ -1,3 +1,5 @@
+<p align="center"><img src="assets/kada-xml-banner.png" alt="KADA XML" width="420"></p>
+
 # KADA XML
 
 **Premiere → Final Cut Pro X.** Premiere Pro sekanslarını Final Cut Pro X'e (FCPXML) taşıyan küçük, ücretsiz bir program.

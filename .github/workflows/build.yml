@@ -26,8 +26,12 @@ jobs:
       - run: pip install pyinstaller
       - name: Test
         run: python tests/test_convert.py
-      - name: Build
-        run: pyinstaller --noconfirm --windowed --onefile --name "KADA-XML" app.py
+      - name: Build (Windows)
+        if: runner.os == 'Windows'
+        run: pyinstaller --noconfirm --windowed --onefile --name "KADA-XML" --icon assets/icon.ico --add-data "assets/icon.png;assets" app.py
+      - name: Build (macOS)
+        if: runner.os == 'macOS'
+        run: pyinstaller --noconfirm --windowed --name "KADA-XML" --icon assets/icon.icns --add-data "assets/icon.png:assets" app.py
       - name: Zip (Windows)
         if: runner.os == 'Windows'
         run: Compress-Archive -Path dist/KADA-XML.exe -DestinationPath ${{ matrix.artifact }}
