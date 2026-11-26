@@ -26,7 +26,7 @@ from urllib.parse import unquote, quote
 import xml.etree.ElementTree as ET
 from xml.sax.saxutils import quoteattr
 
-__version__ = "1.0.2"
+__version__ = "1.0.3"
 
 
 class ConvertError(Exception):
