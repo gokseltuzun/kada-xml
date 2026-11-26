@@ -27,15 +27,24 @@ Windows ve Mac'te çalışır, kurulum gerektirmez.
 
 | Taşınır | Taşınmaz |
 |---|---|
-| Kesimler, in/out noktaları | Efektler, Lumetri / renk |
-| Track düzeni (V1 ana storyline, V2+ üstte, sesler altta) | Geçişler |
-| Boşluklar (gap) | Yazılar, MOGRT, generator |
-| Klip açık/kapalı durumu | Keyframe'ler |
-| Sabit ses seviyesi (dB) | Nested sekans içeriği |
-| Sabit hız (kontrol et) | |
+| Kesimler, in/out noktaları (geçişe değen klipler dahil) | Efektler, Lumetri / renk |
+| Track düzeni (V1 ana storyline, V2+ üstte, sesler altta) | Yazılar, MOGRT, generator (yerine marker) |
+| Boşluklar (gap) | Nest içeriği (yerine boşluk + marker) |
+| V1 geçişleri → Cross Dissolve (yer ve süre aynı) | V2+ üzerindeki geçişler |
+| Ses geçişleri → ses fade'i | Opaklık, ölçek, pozisyon keyframe'leri |
+| Klip açık/kapalı durumu | |
+| Ses seviyesi, Gain, ses keyframe'leri | |
+| Sabit hız, ters klip (kontrol et) | |
+| Fotoğraf / PNG / JPG | |
+| Karışık kare hızları (23.976, 25, 29.97, 30, 50…), drop-frame | |
+| Sekans ve klip marker'ları | |
 | WAV/BWF timecode (senkron) | |
 
 Taşınmayan her şey dönüştürmeden sonra raporda yazar.
+
+**Bilinen:** 23.976 bir sekansta 29.97 klibin hemen ardından 50p klip gelirse Final Cut
+"not on an edit frame boundary" uyarısı verip bir alt klibi 1 kareden az kaydırabilir.
+Geçiş için medyada yeterli kare yoksa geçiş kısaltılır ya da düz kesim olur (raporda yazar).
 
 ## Komut satırı
 
@@ -57,10 +66,16 @@ python tests/test_convert.py [gercek.xml]   # öz test
 3. **Convert** → import the `.fcpxml` in FCPX via **File → Import → XML…**
    (relink if clips show as missing).
 
-Carries cuts, in/out points, track layout (V1 = primary storyline, other video tracks as
-lanes above, audio as lanes below), gaps, enable state, constant audio level, constant
-speed and BWF timecode for WAV files. Effects, color, transitions, titles and keyframes are
-not carried and are listed in the report. Standard library only. MIT license.
+Carries cuts, in/out points (also for clips that touch a transition), track layout
+(V1 = primary storyline, other video tracks as lanes above, audio as lanes below), gaps,
+V1 transitions as Cross Dissolve, audio transitions as fades, enable state, audio level,
+gain and level keyframes, constant and reversed speed, stills, mixed frame rates,
+drop-frame, markers and BWF timecode for WAV files. Effects, color, titles, nests and
+video keyframes are not carried; titles and nests leave a marker. Everything not carried
+is listed in the report. Standard library only. MIT license.
+
+Tests: `python tests/test_convert.py` (synthetic) and `python tests/test_fixtures.py`
+(real Premiere exports in tests/fixtures, checked against Final Cut's own DTD when installed).
 
 Builds: push a tag `v*` and GitHub Actions builds the Windows `.exe` and macOS `.app`
 and attaches them to the release.
