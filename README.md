@@ -69,7 +69,7 @@ and attaches them to the release.
 
 ## İletişim / Contact
 
-Göksel Tüzün · **Kada Mariage**
+Göksel Tuzun · **Kada Film**
 ✉️ [gokseltuzun@gmail.com](mailto:gokseltuzun@gmail.com)
 
 Hata, öneri ya da teşekkür için yazabilirsin. Programı işine yaradıysa bir ⭐ bırak.
