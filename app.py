@@ -58,7 +58,9 @@ class App(tk.Tk):
 
         self.say("Premiere'de sekansı seç → File → Export → Final Cut Pro XML.\n"
                  "Sonra o XML'i burada seç ve Dönüştür'e bas. FCPX'te: File → Import → XML.\n"
-                 "Taşınır: kesimler, track'ler, boşluklar, ses seviyesi. Taşınmaz: efekt, renk, geçiş, yazı.\n")
+                 "Taşınır: kesimler, track'ler, boşluklar, V1 geçişleri (Cross Dissolve), ses geçişleri (fade),\n"
+                 "ses seviyesi, hız, ters klip, fotoğraf, marker'lar.\n"
+                 "Taşınmaz: efekt, renk, yazı ve nest (yerlerinde marker kalır). Hepsi raporda yazar.\n")
 
     def say(self, text, clear=False):
         self.log.configure(state='normal')
