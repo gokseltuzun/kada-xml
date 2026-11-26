@@ -26,7 +26,7 @@ from urllib.parse import unquote, quote
 import xml.etree.ElementTree as ET
 from xml.sax.saxutils import quoteattr
 
-__version__ = "1.0.1"
+__version__ = "1.0.2"
 
 
 class ConvertError(Exception):
@@ -60,6 +60,37 @@ def _pathurl_to_local(u):
     if not (len(u) > 1 and u[1] == ':') and not u.startswith('/'):
         u = '/' + u
     return u
+
+
+def _qt_has_tmcd(path):
+    """QuickTime/MP4: does the file carry a timecode (tmcd) track that FCPX reads?
+    True / False, or None when the file can't be read."""
+    try:
+        size = os.path.getsize(path)
+        with open(path, 'rb') as fh:
+            pos = 0
+            while pos + 8 <= size:
+                fh.seek(pos)
+                hdr = fh.read(8)
+                if len(hdr) < 8:
+                    break
+                n, kind = struct.unpack('>I4s', hdr)
+                hl = 8
+                if n == 1:
+                    n = struct.unpack('>Q', fh.read(8))[0]
+                    hl = 16
+                elif n == 0:
+                    n = size - pos
+                if kind == b'moov':
+                    if n > 200 * 1024 * 1024:
+                        return None
+                    return b'tmcd' in fh.read(n - hl)
+                if n < hl:
+                    break
+                pos += n
+    except OSError:
+        return None
+    return None
 
 
 def _bwf_time_reference(path):
@@ -183,8 +214,21 @@ def convert(src, dst, frm=None, to=None):
                     warnings['WAV dosyasi bulunamadi, timecode XML\'den alindi / '
                              'WAV not found, timecode taken from XML (check sync)'] += 1
         else:
+            # FCPX takes a QuickTime/MP4 file's start from its tmcd track only.
+            # Sony XAVC .MP4 keeps timecode elsewhere (rtmd/XML), so FCPX starts it at 0.
+            tm = _qt_has_tmcd(mapped)
+            if tm is None:
+                tm = _qt_has_tmcd(local)
+            if tm is None and local.lower().endswith(('.mp4', '.m4v')):
+                tm = False
+                warnings['MP4 bulunamadi, timecode 0 kabul edildi / '
+                         'MP4 not found, start timecode assumed 0'] += 1
+            if tm is False:
+                start = Fraction(0)
             start = Fraction(round(start * fps)) / fps
         out_path = mapped if mapped.startswith('/') else '/' + mapped
+        while '//' in out_path:
+            out_path = out_path.replace('//', '/')
         parent = os.path.basename(os.path.dirname(local))
         name = f.findtext('name') or os.path.basename(local)
         files[fid] = dict(id=f"r{len(files) + 2}", name=name, parent=parent, path=out_path,
