@@ -24,13 +24,16 @@ def _file(fid, name, path, dur, tc_frame, video=True, ch=2):
             f'<channelcount>{ch}</channelcount></audio></media></file>')
 
 
-def _clip(cid, name, fid, start, end, cin, files_seen, filexml, level=None):
+def _clip(cid, name, fid, start, end, cin, files_seen, filexml, level=None, speed=None):
     f = f'<file id="{fid}"/>' if fid in files_seen else filexml
     files_seen.add(fid)
     lv = ''
     if level is not None:
         lv = ('<filter><effect><name>Audio Levels</name><effectid>audiolevels</effectid>'
               f'<parameter><parameterid>level</parameterid><value>{level}</value></parameter></effect></filter>')
+    if speed is not None:
+        lv += ('<filter><effect><name>Time Remap</name><effectid>timeremap</effectid>'
+               f'<parameter><parameterid>speed</parameterid><value>{speed}</value></parameter></effect></filter>')
     return (f'<clipitem id="{cid}"><name>{name}</name><enabled>TRUE</enabled>'
             f'<rate><timebase>{FPS}</timebase><ntsc>FALSE</ntsc></rate>'
             f'<start>{start}</start><end>{end}</end><in>{cin}</in><out>{cin + end - start}</out>{f}{lv}</clipitem>')
@@ -43,7 +46,7 @@ def make_sample(path):
     fw = _file('f3', 'Tr1.WAV', 'D%3a/Media/Job/Audio/T01/Tr1.WAV', 6000, 89000, video=False, ch=1)
     fw2 = _file('f4', 'Tr1.WAV', 'D%3a/Media/Job/Audio/T02/Tr1.WAV', 6000, 95000, video=False, ch=1)
     v1 = (_clip('c1', 'A001.MP4', 'f1', 0, 250, 0, seen, fa) +
-          _clip('c2', 'A001.MP4', 'f1', 300, 700, 400, seen, fa))          # gap 250-300
+          _clip('c2', 'A001.MP4', 'f1', 300, 700, 400, seen, fa, speed=50))  # gap 250-300, 50% slow
     v2 = _clip('c3', 'B001.MP4', 'f2', 120, 480, 10, seen, fb)
     a1l = _clip('c4', 'A001.MP4', 'f1', 300, 700, 400, seen, fa, level=0.5)
     a1r = _clip('c5', 'A001.MP4', 'f1', 300, 700, 400, seen, fa)
@@ -68,14 +71,24 @@ def _s(x):
     return F(x)
 
 
+def _speed(c):
+    for f in c.findall('filter'):
+        if f.findtext('effect/effectid') == 'timeremap':
+            for p in f.iter('parameter'):
+                if p.findtext('parameterid') == 'speed':
+                    return F(p.findtext('value')) / 100
+    return F(1)
+
+
 def expected(src):
     seq = ET.parse(src).getroot().find('.//sequence')
     fps = core._rate_of(seq)
     exp = []
     for i, t in enumerate(seq.find('media/video').findall('track')):
         for c in t.findall('clipitem'):
+            # Premiere: in/out of a speed-changed clip are retimed frames
             exp.append(('v', i, F(int(c.findtext('start'))) / fps, F(int(c.findtext('end'))) / fps,
-                        F(int(c.findtext('in'))) / fps))
+                        F(int(c.findtext('in'))) / fps * _speed(c)))
     ln = 0
     for t in seq.find('media/audio').findall('track'):
         if t.get('currentExplodedTrackIndex', '0') != '0':
@@ -87,6 +100,19 @@ def expected(src):
     return sorted(exp)
 
 
+def _src(el):
+    """Source time at the clip's local start (through the timeMap, if any)."""
+    ls = _s(el.get('start'))
+    tm = el.find('timeMap')
+    if tm is None:
+        return ls
+    pts = tm.findall('timept')
+    assert _s(pts[0].get('time')) == 0 and _s(pts[0].get('value')) == 0, 'timeMap must start at 0'
+    t1, v1 = _s(pts[-1].get('time')), _s(pts[-1].get('value'))
+    assert ls + _s(el.get('duration')) <= t1, 'clip outside timeMap'
+    return ls * v1 / t1
+
+
 def got(dst):
     r = ET.parse(dst).getroot()
     starts = {a.get('id'): _s(a.get('start')) for a in r.iter('asset')}
@@ -94,14 +120,14 @@ def got(dst):
     for el in r.find('.//spine'):
         off, ls = _s(el.get('offset')), _s(el.get('start'))
         if el.tag == 'asset-clip':
-            out.append(('v', 0, off, off + _s(el.get('duration')), ls - starts[el.get('ref')]))
+            out.append(('v', 0, off, off + _s(el.get('duration')), _src(el) - starts[el.get('ref')]))
         for c in el:
             if c.tag != 'asset-clip':
                 continue
             o = off + _s(c.get('offset')) - ls
             lane = int(c.get('lane'))
             out.append(('v' if lane > 0 else 'a', lane if lane > 0 else -lane - 1,
-                        o, o + _s(c.get('duration')), _s(c.get('start')) - starts[c.get('ref')]))
+                        o, o + _s(c.get('duration')), _src(c) - starts[c.get('ref')]))
     return sorted(out)
 
 

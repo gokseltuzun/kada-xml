@@ -26,7 +26,7 @@ from urllib.parse import unquote, quote
 import xml.etree.ElementTree as ET
 from xml.sax.saxutils import quoteattr
 
-__version__ = "1.0.0"
+__version__ = "1.0.1"
 
 
 class ConvertError(Exception):
@@ -269,6 +269,20 @@ def convert(src, dst, frm=None, to=None):
 
     # ---- primary storyline = V1 ----
     v1 = sorted([c for c in vclips if c['track'] == 0], key=lambda c: c['off'])
+    def spd(c):
+        return Fraction(c['speed']).limit_denominator(10000)
+
+    def retimed(c):
+        return c['speed'] > 0 and abs(c['speed'] - 1.0) > 1e-6
+
+    def src_start(c):
+        # Premiere: on a speed-changed clip in/out are in retimed frames -> convert to source time
+        return files[c['fid']]['start'] + (c['cin'] * spd(c) if retimed(c) else c['cin'])
+
+    def local_start(c):
+        # FCPX: with a timeMap, the clip's start is in retimed (local) time
+        return src_start(c) / spd(c) if retimed(c) else src_start(c)
+
     spine = []
     cur = Fraction(0)
     for c in v1:
@@ -278,7 +292,7 @@ def convert(src, dst, frm=None, to=None):
         if c['off'] > cur:
             spine.append(dict(gap=True, off=cur, dur=c['off'] - cur, lstart=Fraction(0)))
         spine.append(dict(gap=False, clip=c, off=c['off'], dur=c['dur'],
-                          lstart=files[c['fid']]['start'] + c['cin']))
+                          lstart=local_start(c)))
         cur = c['off'] + c['dur']
     if total > cur or not spine:
         spine.append(dict(gap=True, off=cur, dur=max(total - cur, fd), lstart=Fraction(0)))
@@ -302,7 +316,7 @@ def convert(src, dst, frm=None, to=None):
         if c['kind'] == 'audio' and fa['has_v']:
             src_en = 'audio'
         off = c['off'] if parent is None else parent['lstart'] + (c['off'] - parent['off'])
-        start = fa['start'] + c['cin']
+        start = local_start(c)
         attrs = [f'ref="{fa["id"]}"', f'name={quoteattr(fa["label"])}', f'offset="{_t(off)}"',
                  f'start="{_t(start)}"', f'duration="{_t(c["dur"])}"']
         if lane is not None:
@@ -314,11 +328,14 @@ def convert(src, dst, frm=None, to=None):
         if not c['enabled']:
             attrs.append('enabled="0"')
         inner = []
-        if abs(c['speed'] - 1.0) > 1e-6:
-            sp = Fraction(c['speed']).limit_denominator(10000)
+        if retimed(c):
+            sp = spd(c)
+            # linear map 0 -> 0 that covers the clip's whole local range
             inner.append(f'{indent}  <timeMap><timept time="0s" value="0s" interp="linear"/>'
-                         f'<timept time="{_t(c["dur"])}" value="{_t(c["dur"] * sp)}" interp="linear"/></timeMap>')
+                         f'<timept time="{_t(start + c["dur"])}" value="{_t(src_start(c) + c["dur"] * sp)}" interp="linear"/></timeMap>')
             warnings['hizli/yavas klip, FCPX\'te kontrol et / speed-changed clip, check in FCPX'] += 1
+        elif abs(c['speed'] - 1.0) > 1e-6:
+            warnings['ters/negatif hiz normal alindi / reverse speed made normal'] += 1
         if c['vol'] is not None:
             inner.append(f'{indent}  <adjust-volume amount="{c["vol"]:.2f}dB"/>')
         head = f'{indent}<asset-clip {" ".join(attrs)}'
