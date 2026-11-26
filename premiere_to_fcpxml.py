@@ -239,18 +239,53 @@ def convert(src, dst, frm=None, to=None):
         v['label'] = f"{v['parent']}_{v['name']}" if cnt[v['name']] > 1 else v['name']
 
     # ---- clips ----
-    def clip_info(ci, kind, track_no):
+    def _tr(t):
+        if t is None:
+            return None
+        return (int(t.findtext('start')), int(t.findtext('end')),
+                (t.findtext('alignment') or 'center').lower())
+
+    def _cut(t):
+        # FCPX gets no transitions: a two-sided dissolve becomes a cut at its centre,
+        # a fade from/to black keeps the clip over the whole fade.
+        ts, te, al = t
+        return (ts + te) // 2 if al == 'center' else None
+
+    def clip_info(ci, kind, track_no, prev_t=None, next_t=None):
         fe = ci.find('file')
         if fe is None or fe.get('id') not in files:
             warnings['dosyasiz klip atlandi / clip without media skipped'] += 1
             return None
         start = int(ci.findtext('start'))
         end = int(ci.findtext('end'))
-        if start < 0 or end < 0:
+        cin_f = int(ci.findtext('in'))
+        span = int(ci.findtext('out')) - cin_f
+        # Premiere writes -1 for an edge that sits inside a transition. Then in/out run
+        # from the start of the transition before to the end of the transition after.
+        if start < 0:
+            if prev_t is not None:
+                start = prev_t[0]
+                c = _cut(prev_t)
+                if c is not None:
+                    cin_f += c - start
+                    start = c
+            elif end >= 0:
+                start = end - span
+        if end < 0:
+            if next_t is not None:
+                end = next_t[1]
+                c = _cut(next_t)
+                if c is not None:
+                    end = c
+            elif start >= 0:
+                end = start + span
+        if start < 0 or end <= start:
             warnings['gecisli klip atlandi / clip inside a transition skipped'] += 1
             return None
+        if int(ci.findtext('start')) < 0 or int(ci.findtext('end')) < 0:
+            warnings['gecis kesime cevrildi / transition edge turned into a cut'] += 1
         r = _rate_of(ci, fps)
-        cin = Fraction(int(ci.findtext('in'))) / r
+        cin = Fraction(cin_f) / r
         speed = 1.0
         vol_db = None
         for flt in ci.findall('filter'):
@@ -279,14 +314,23 @@ def convert(src, dst, frm=None, to=None):
                     dur=Fraction(end - start) / fps, cin=cin, speed=speed,
                     vol=vol_db, enabled=enabled, kind=kind, track=track_no)
 
+    def track_clips(tr):
+        items = [e for e in tr if e.tag in ('clipitem', 'transitionitem')]
+        for i, e in enumerate(items):
+            if e.tag != 'clipitem':
+                continue
+            pv = items[i - 1] if i > 0 and items[i - 1].tag == 'transitionitem' else None
+            nx = items[i + 1] if i + 1 < len(items) and items[i + 1].tag == 'transitionitem' else None
+            yield e, _tr(pv), _tr(nx)
+
     vnode = seq.find('media/video')
     anode = seq.find('media/audio')
     vtracks = vnode.findall('track') if vnode is not None else []
     atracks = anode.findall('track') if anode is not None else []
     vclips, aclips = [], []
     for i, tr in enumerate(vtracks):
-        for ci in tr.findall('clipitem'):
-            c = clip_info(ci, 'video', i)
+        for ci, pt, nt in track_clips(tr):
+            c = clip_info(ci, 'video', i, pt, nt)
             if c:
                 vclips.append(c)
         n = len(tr.findall('generatoritem'))
@@ -301,8 +345,8 @@ def convert(src, dst, frm=None, to=None):
         if int(tr.get('currentExplodedTrackIndex', '0')) > 0:
             continue  # right channel of a split stereo track
         lane_no += 1
-        for ci in tr.findall('clipitem'):
-            c = clip_info(ci, 'audio', lane_no)
+        for ci, pt, nt in track_clips(tr):
+            c = clip_info(ci, 'audio', lane_no, pt, nt)
             if c:
                 aclips.append(c)
 
