@@ -59,8 +59,19 @@ def check(src):
         # 2. transitions carried, stills as <video>
         want_tr = len(v1.findall('transitionitem'))
         got_tr = len(spine.findall('transition'))
-        if got_tr != want_tr:
-            errs.append(f'transitions: {got_tr} carried, {want_tr} in Premiere')
+        if want_tr and not got_tr:
+            errs.append(f'transitions: none carried, {want_tr} in Premiere')
+        items = list(spine)
+        for i, c in enumerate(items):
+            if c.tag != 'transition':
+                continue
+            if i + 1 < len(items) and items[i + 1].tag == 'transition':
+                errs.append(f'two transitions on one edit at {c.get("offset")}')
+            o, e = t(c.get('offset')), t(c.get('offset')) + t(c.get('duration'))
+            nxt = items[i + 1] if i + 1 < len(items) else None
+            edit = t(nxt.get('offset')) if nxt is not None else e
+            if not (o <= edit <= e):
+                errs.append(f'transition {c.get("offset")} is not on its edit ({edit})')
         assets = {a.get('id'): a for a in out.iter('asset')}
         for c in out.iter('asset-clip'):
             src_ = assets[c.get('ref')].find('media-rep').get('src').lower()

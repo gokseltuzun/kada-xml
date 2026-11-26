@@ -42,6 +42,10 @@ Windows ve Mac'te çalışır, kurulum gerektirmez.
 
 Taşınmayan her şey dönüştürmeden sonra raporda yazar.
 
+**Bilinen:** 23.976 bir sekansta 29.97 klibin hemen ardından 50p klip gelirse Final Cut
+"not on an edit frame boundary" uyarısı verip bir alt klibi 1 kareden az kaydırabilir.
+Geçiş için medyada yeterli kare yoksa geçiş kısaltılır ya da düz kesim olur (raporda yazar).
+
 ## Komut satırı
 
 Python 3.8+ ile, ek paket gerekmez:

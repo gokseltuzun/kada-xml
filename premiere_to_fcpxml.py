@@ -434,12 +434,13 @@ def convert(src, dst, frm=None, to=None):
             if i == 0:
                 ts, te = int(t.findtext('start')), int(t.findtext('end'))
                 if te > ts >= 0:
-                    v1_trans.append((Fraction(ts) / fps, Fraction(te - ts) / fps,
-                                     t.findtext('effect/name') or 'Cross Dissolve'))
+                    tt = _tr(t)
+                    cut = _cut(tt)
+                    if cut is None:
+                        cut = ts if tt[2] == 'start-black' else te
+                    v1_trans.append([Fraction(ts) / fps, Fraction(te) / fps, Fraction(cut) / fps])
                     continue
             warnings['V2+ gecis tasinmadi / transition above V1 not carried'] += 1
-    if v1_trans:
-        warnings['gecis Cross Dissolve olarak tasindi / transitions carried as Cross Dissolve'] += len(v1_trans)
 
     lane_no = 0
     for tr in atracks:
@@ -630,6 +631,52 @@ def convert(src, dst, frm=None, to=None):
     def lane_of(c):
         return c['track'] if c['kind'] == 'video' else -c['track']
 
+    # ---- V1 transitions: one per edit, inside the media FCPX actually has ----
+    def handles(c):
+        """seconds of media before the clip's start and after its end (timeline time)"""
+        fa = files[c['fid']]
+        if fa['still'] or c['reverse']:
+            return None, None
+        sp = spd(c) if retimed(c) else Fraction(1)
+        s0 = src_start(c)
+        return (s0 - fa['start']) / sp, (fa['start'] + fa['dur'] - (s0 + c['dur'] * sp)) / sp
+
+    def floor_fd(x):
+        return math.floor(x / fd) * fd
+
+    by_cut = {}
+    for a, b, cut in v1_trans:
+        if cut in by_cut:            # fade to black + fade from black on one edit -> one dissolve
+            by_cut[cut][0] = min(by_cut[cut][0], a)
+            by_cut[cut][1] = max(by_cut[cut][1], b)
+        else:
+            by_cut[cut] = [a, b]
+    fitted = []
+    for cut, (a, b) in sorted(by_cut.items()):
+        left = next((x for x in spine if x['off'] + x['dur'] == cut), None)
+        right = next((x for x in spine if x['off'] == cut), None)
+        if left is not None and not left['gap']:
+            after = handles(left['clip'])[1]
+            if after is not None:
+                b = min(b, cut + floor_fd(max(after, Fraction(0))))
+            b = min(b, left['off'] + left['dur'] + (right['dur'] if right else 0))
+        if right is not None and not right['gap']:
+            before = handles(right['clip'])[0]
+            if before is not None:
+                a = max(a, cut - floor_fd(max(before, Fraction(0))))
+        if left is None and right is None:
+            continue
+        a, b = max(a, Fraction(0)), min(b, total)
+        if b - a < fd:
+            warnings['gecis icin medya yok, kesim yapildi / no media for transition, made a cut'] += 1
+            continue
+        fitted.append((a, b - a, cut))
+    if fitted:
+        warnings['gecis Cross Dissolve olarak tasindi / transitions carried as Cross Dissolve'] += len(fitted)
+    if len(by_cut) < len(v1_trans):
+        warnings['ayni kesimdeki gecisler birlestirildi / transitions on one edit merged'] += \
+            len(v1_trans) - len(by_cut)
+
     out = []
     w = out.append
     w('<?xml version="1.0" encoding="UTF-8"?>')
@@ -654,7 +701,7 @@ def convert(src, dst, frm=None, to=None):
         w(f'    <asset {" ".join(attrs)}>')
         w(f'      <media-rep kind="original-media" src={quoteattr(url)}/>')
         w('    </asset>')
-    if v1_trans:
+    if fitted:
         w('    <effect id="fxCD" name="Cross Dissolve" uid="FxPlug:4731E73A-8DAC-4113-9A30-AE85B1761265"/>')
     w('  </resources>')
     w('  <library>')
@@ -664,13 +711,13 @@ def convert(src, dst, frm=None, to=None):
       f'audioLayout="stereo" audioRate="48k">')
     w('          <spine>')
     ind = '            '
-    pending = sorted(v1_trans, key=lambda x: x[0])
+    pending = list(fitted)
 
     def flush(before):
-        # a transition sits in the spine between the two items it overlaps
-        while pending and (before is None or pending[0][0] + pending[0][1] / 2 <= before):
-            o, d, nm = pending.pop(0)
-            w(f'{ind}<transition name={quoteattr(nm)} offset="{_t(o)}" duration="{_t(d)}">')
+        # a transition sits in the spine on its edit, between the two items it joins
+        while pending and (before is None or pending[0][2] <= before):
+            o, d, _cut_at = pending.pop(0)
+            w(f'{ind}<transition name="Cross Dissolve" offset="{_t(o)}" duration="{_t(d)}">')
             w(f'{ind}  <filter-video ref="fxCD" name="Cross Dissolve"/>')
             w(f'{ind}</transition>')
 
