@@ -62,3 +62,13 @@ not carried and are listed in the report. Standard library only. MIT license.
 
 Builds: push a tag `v*` and GitHub Actions builds the Windows `.exe` and macOS `.app`
 and attaches them to the release.
+
+---
+
+## İletişim / Contact
+
+Göksel Tüzün · **Kada Mariage**
+✉️ [gokseltuzun@gmail.com](mailto:gokseltuzun@gmail.com)
+
+Hata, öneri ya da teşekkür için yazabilirsin. Programı işine yaradıysa bir ⭐ bırak.
+*Bugs, ideas or thanks are welcome. If it saved you time, leave a ⭐.*
