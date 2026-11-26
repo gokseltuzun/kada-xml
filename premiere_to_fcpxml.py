@@ -4,9 +4,11 @@
 Command line:
   python premiere_to_fcpxml.py INPUT.xml OUTPUT.fcpxml [--from "E:/Media"] [--to "/Volumes/Disk/Media"]
 
-What carries over: cuts, in/out points, track layout, gaps, clip enable state,
-constant audio levels (dB), constant speed (check it).
-What does not: effects, color, transitions, titles/generators, keyframes (they are reported).
+What carries over: cuts, in/out points, track layout, gaps, clip enable state, V1
+transitions (as Cross Dissolve), audio transitions (as fades), audio levels, gain and level
+keyframes, constant and reversed speed, stills, mixed frame rates, markers.
+What does not: effects, color, titles/generators and nests (a marker is left in their place),
+video keyframes. Everything not carried is reported.
 
 Layout in FCPX: V1 = primary storyline, V2.. = lanes above, audio tracks = lanes below.
 Video clips are video-only (srcEnable=video), audio comes as separate clips, as in Premiere.
@@ -47,6 +49,21 @@ def _rate_of(el, default=None):
     tb = int(r.findtext('timebase'))
     ntsc = (r.findtext('ntsc') or 'FALSE').upper() == 'TRUE'
     return Fraction(tb * 1000, 1001) if ntsc else Fraction(tb)
+
+
+STILL_EXT = ('.png', '.jpg', '.jpeg', '.tif', '.tiff', '.psd', '.bmp', '.gif', '.heic', '.tga', '.exr', '.dpx')
+
+
+def _fmt_name(w, h, rate):
+    """FCPX format name for common sizes; None = custom format (no name)."""
+    if rate is None:
+        return 'FFVideoFormatRateUndefined'
+    size = {(1920, 1080): '1080p', (1280, 720): '720p', (3840, 2160): '2160p'}.get((w, h))
+    if size is None:
+        return None
+    codes = {Fraction(24000, 1001): '2398', Fraction(30000, 1001): '2997', Fraction(60000, 1001): '5994'}
+    code = codes.get(Fraction(rate)) or (str(int(rate)) if Fraction(rate).denominator == 1 else None)
+    return f'FFVideoFormat{size}{code}' if code else None
 
 
 def _pathurl_to_local(u):
@@ -182,11 +199,25 @@ def convert(src, dst, frm=None, to=None):
     W = int(vfmt.findtext('width')) if vfmt is not None and vfmt.findtext('width') else 1920
     H = int(vfmt.findtext('height')) if vfmt is not None and vfmt.findtext('height') else 1080
     warnings = Counter()
+    seq_tc = seq.find('timecode')
+    seq_df = seq_tc is not None and (seq_tc.findtext('displayformat') or '').upper() == 'DF'
+
+    # formats: r1 = sequence, the others describe the media
+    formats = {(W, H, fd): 'r1'}
+
+    def fmt_id(w, h, frame_dur):
+        key = (w, h, frame_dur)
+        if key not in formats:
+            formats[key] = f'fmt{len(formats) + 1}'
+        return formats[key]
 
     # ---- assets ----
     files = {}
+    nopath = set()  # file ids with no media path: graphics, titles, MOGRTs
     for f in root.iter('file'):
         if f.find('pathurl') is None:
+            if f.find('*') is not None:
+                nopath.add(f.get('id'))
             continue
         fid = f.get('id')
         if fid in files:
@@ -210,7 +241,8 @@ def convert(src, dst, frm=None, to=None):
                 sr = bw[1]
             else:
                 start = Fraction(round(start * sr), sr)
-                if local.lower().endswith(('.wav', '.bwf')):
+                if local.lower().endswith(('.wav', '.bwf')) and not (
+                        os.path.exists(local) or os.path.exists(mapped)):
                     warnings['WAV dosyasi bulunamadi, timecode XML\'den alindi / '
                              'WAV not found, timecode taken from XML (check sync)'] += 1
         else:
@@ -225,14 +257,25 @@ def convert(src, dst, frm=None, to=None):
                          'MP4 not found, start timecode assumed 0'] += 1
             if tm is False:
                 start = Fraction(0)
-            start = Fraction(round(start * fps)) / fps
+            start = Fraction(round(start * frate)) / frate  # on the media's own frame grid
         out_path = mapped if mapped.startswith('/') else '/' + mapped
         while '//' in out_path:
             out_path = out_path.replace('//', '/')
         parent = os.path.basename(os.path.dirname(local))
         name = f.findtext('name') or os.path.basename(local)
+        still = has_v and (local.lower().endswith(STILL_EXT) or f.findtext('duration') is None)
+        fmt = None
+        if has_v:
+            sc = f.find('media/video/samplecharacteristics')
+            mw = int(sc.findtext('width') or W) if sc is not None else W
+            mh = int(sc.findtext('height') or H) if sc is not None else H
+            fmt = fmt_id(mw, mh, None if still else 1 / frate)
+        df = tc is not None and (tc.findtext('displayformat') or '').upper() == 'DF' and not still
+        if still:
+            start, dur = Fraction(0), Fraction(0)
         files[fid] = dict(id=f"r{len(files) + 2}", name=name, parent=parent, path=out_path,
-                          start=start, dur=dur, has_v=has_v, has_a=has_a, ch=ch, sr=sr)
+                          start=start, dur=dur, has_v=has_v, has_a=has_a, ch=ch, sr=sr,
+                          fmt=fmt, still=still, df=df, frate=frate)
 
     cnt = Counter(v['name'] for v in files.values())
     for v in files.values():
@@ -242,26 +285,34 @@ def convert(src, dst, frm=None, to=None):
     def _tr(t):
         if t is None:
             return None
+        ticks = t.findtext('cutPointTicks')
         return (int(t.findtext('start')), int(t.findtext('end')),
-                (t.findtext('alignment') or 'center').lower())
+                (t.findtext('alignment') or 'center').lower(),
+                int(ticks) if ticks not in (None, '') else None)
 
     def _cut(t):
         # FCPX gets no transitions: a two-sided dissolve becomes a cut at its centre,
         # a fade from/to black keeps the clip over the whole fade.
-        ts, te, al = t
-        return (ts + te) // 2 if al == 'center' else None
+        ts, te, al, ticks = t
+        if al in ('center', 'start', 'end') and ticks is not None:
+            # Premiere's own cut point inside the transition (254016000000 ticks/s)
+            return ts + int(round(Fraction(ticks, 254016000000) * fps))
+        if al == 'center':
+            return (ts + te) // 2
+        if al == 'start':
+            return ts
+        if al == 'end':
+            return te
+        return None
 
     def clip_info(ci, kind, track_no, prev_t=None, next_t=None):
-        fe = ci.find('file')
-        if fe is None or fe.get('id') not in files:
-            warnings['dosyasiz klip atlandi / clip without media skipped'] += 1
-            return None
         start = int(ci.findtext('start'))
         end = int(ci.findtext('end'))
-        cin_f = int(ci.findtext('in'))
-        span = int(ci.findtext('out')) - cin_f
+        cin_f = int(ci.findtext('in') or 0)
+        span = int(ci.findtext('out') or 0) - cin_f
         # Premiere writes -1 for an edge that sits inside a transition. Then in/out run
         # from the start of the transition before to the end of the transition after.
+        fade_in = fade_out = 0
         if start < 0:
             if prev_t is not None:
                 start = prev_t[0]
@@ -269,6 +320,7 @@ def convert(src, dst, frm=None, to=None):
                 if c is not None:
                     cin_f += c - start
                     start = c
+                fade_in = prev_t[1] - start
             elif end >= 0:
                 start = end - span
         if end < 0:
@@ -277,17 +329,36 @@ def convert(src, dst, frm=None, to=None):
                 c = _cut(next_t)
                 if c is not None:
                     end = c
+                fade_out = end - next_t[0]
             elif start >= 0:
                 end = start + span
         if start < 0 or end <= start:
             warnings['gecisli klip atlandi / clip inside a transition skipped'] += 1
             return None
         if int(ci.findtext('start')) < 0 or int(ci.findtext('end')) < 0:
-            warnings['gecis kesime cevrildi / transition edge turned into a cut'] += 1
+            warnings['gecisli klip kenari cozuldu / clip edge inside a transition resolved'] += 1
+        name = ci.findtext('name') or ''
+        fe = ci.find('file')
+        if ci.tag != 'clipitem' or fe is None or fe.get('id') not in files:
+            # nest, title, graphic, colour matte...: keep the place, leave a marker
+            if ci.find('sequence') is not None:
+                what = 'NEST'
+                warnings['nest tasinmadi, yerine bosluk + marker / nest not carried, gap + marker left'] += 1
+            elif ci.tag == 'generatoritem' or fe is None or fe.get('id') in nopath:
+                what = 'YAZI/GRAFIK'
+                warnings['yazi/grafik tasinmadi, yerine marker / title/graphic not carried, marker left'] += 1
+            else:
+                what = 'MEDYA YOK'
+                warnings['dosyasiz klip, yerine marker / clip without media, marker left'] += 1
+            return dict(placeholder=True, label=f'{what}: {name}', off=Fraction(start) / fps,
+                        dur=Fraction(end - start) / fps, kind=kind, track=track_no)
         r = _rate_of(ci, fps)
         cin = Fraction(cin_f) / r
         speed = 1.0
+        reverse = False
         vol_db = None
+        gain_db = 0.0
+        vol_kf = []
         for flt in ci.findall('filter'):
             eid = flt.findtext('effect/effectid') or ''
             ename = flt.findtext('effect/name') or eid
@@ -297,25 +368,48 @@ def convert(src, dst, frm=None, to=None):
                         speed = float(p.findtext('value')) / 100.0
                         if p.findall('keyframe'):
                             warnings['degisken hiz sabit alindi / variable speed made constant'] += 1
+                    elif p.findtext('parameterid') == 'reverse':
+                        reverse = (p.findtext('value') or '').upper() == 'TRUE'
             elif eid == 'audiolevels':
                 for p in flt.iter('parameter'):
                     if p.findtext('parameterid') == 'level':
                         lv = float(p.findtext('value'))
-                        if p.findall('keyframe'):
-                            warnings['ses keyframe tasinmadi / audio keyframes not carried'] += 1
-                        if abs(lv - 1.0) > 1e-4:
+                        kfs = p.findall('keyframe')
+                        if kfs:
+                            for k in kfs:
+                                v = float(k.findtext('value'))
+                                vol_kf.append((Fraction(int(float(k.findtext('when')))) / r,
+                                               20 * math.log10(v) if v > 0 else -96.0))
+                        elif abs(lv - 1.0) > 1e-4:
                             vol_db = 20 * math.log10(lv) if lv > 0 else -96
+            elif ename == 'Gain':
+                for p in flt.iter('parameter'):
+                    if (p.findtext('parameterid') or '').startswith('Gain'):
+                        gain_db += float(p.findtext('value') or 0)
             elif eid in ('basic', 'opacity', 'basicmotion', 'audiopan'):
                 pass
             else:
                 warnings[f'efekt tasinmadi / effect not carried: {ename}'] += 1
+        if gain_db:
+            vol_db = (vol_db or 0.0) + gain_db
+            vol_kf = [(t, v + gain_db) for t, v in vol_kf]
+        markers = []
+        for m in ci.findall('marker'):
+            mi = int(m.findtext('in') or -1)
+            if mi < 0:
+                continue
+            mo = int(m.findtext('out') or -1)
+            markers.append((Fraction(mi) / r, Fraction(mo - mi) / r if mo > mi else None,
+                            m.findtext('name') or 'Marker', m.findtext('comment') or ''))
         enabled = (ci.findtext('enabled') or 'TRUE').upper() == 'TRUE'
         return dict(fid=fe.get('id'), off=Fraction(start) / fps,
-                    dur=Fraction(end - start) / fps, cin=cin, speed=speed,
-                    vol=vol_db, enabled=enabled, kind=kind, track=track_no)
+                    dur=Fraction(end - start) / fps, cin=cin, speed=abs(speed) or 1.0,
+                    reverse=reverse or speed < 0, vol=vol_db, vol_kf=vol_kf, markers=markers,
+                    fade_in=Fraction(max(fade_in, 0)) / fps, fade_out=Fraction(max(fade_out, 0)) / fps,
+                    enabled=enabled, kind=kind, track=track_no)
 
     def track_clips(tr):
-        items = [e for e in tr if e.tag in ('clipitem', 'transitionitem')]
+        items = [e for e in tr if e.tag in ('clipitem', 'generatoritem', 'transitionitem')]
         for i, e in enumerate(items):
             if e.tag != 'clipitem':
                 continue
@@ -333,12 +427,19 @@ def convert(src, dst, frm=None, to=None):
             c = clip_info(ci, 'video', i, pt, nt)
             if c:
                 vclips.append(c)
-        n = len(tr.findall('generatoritem'))
-        if n:
-            warnings['yazi/generator tasinmadi / titles & generators not carried'] += n
-    n = len(list(seq.iter('transitionitem')))
-    if n:
-        warnings['gecis tasinmadi / transitions not carried'] += n
+    # V1 transitions become real FCPX transitions (Cross Dissolve); others are reported
+    v1_trans = []
+    for i, tr in enumerate(vtracks):
+        for t in tr.findall('transitionitem'):
+            if i == 0:
+                ts, te = int(t.findtext('start')), int(t.findtext('end'))
+                if te > ts >= 0:
+                    v1_trans.append((Fraction(ts) / fps, Fraction(te - ts) / fps,
+                                     t.findtext('effect/name') or 'Cross Dissolve'))
+                    continue
+            warnings['V2+ gecis tasinmadi / transition above V1 not carried'] += 1
+    if v1_trans:
+        warnings['gecis Cross Dissolve olarak tasindi / transitions carried as Cross Dissolve'] += len(v1_trans)
 
     lane_no = 0
     for tr in atracks:
@@ -350,32 +451,83 @@ def convert(src, dst, frm=None, to=None):
             if c:
                 aclips.append(c)
 
+    # placeholders (nest, titles...) become markers; an audio twin of a video one is dropped
+    holders = [c for c in vclips if c.get('placeholder')]
+    seen = {(c['label'], c['off']) for c in holders}
+    holders += [c for c in aclips if c.get('placeholder') and (c['label'], c['off']) not in seen]
+    vclips = [c for c in vclips if not c.get('placeholder')]
+    aclips = [c for c in aclips if not c.get('placeholder')]
+    seq_markers = []
+    for m in seq.findall('marker'):
+        mi = int(m.findtext('in') or -1)
+        if mi < 0:
+            continue
+        mo = int(m.findtext('out') or -1)
+        seq_markers.append((Fraction(mi) / fps, Fraction(mo - mi) / fps if mo > mi else None,
+                            m.findtext('name') or 'Marker', m.findtext('comment') or ''))
+    for h in holders:
+        seq_markers.append((h['off'], h['dur'], h['label'], 'Premiere\'den tasinmadi / not carried'))
+
     total = Fraction(int(seq.findtext('duration') or 0)) / fps
-    ends = [c['off'] + c['dur'] for c in vclips + aclips]
+    ends = [c['off'] + c['dur'] for c in vclips + aclips + holders]
     if ends and max(ends) > total:
         total = max(ends)
 
     # ---- primary storyline = V1 ----
+    vclips_lifted = []
     v1 = sorted([c for c in vclips if c['track'] == 0], key=lambda c: c['off'])
     def spd(c):
         return Fraction(c['speed']).limit_denominator(10000)
 
     def retimed(c):
-        return c['speed'] > 0 and abs(c['speed'] - 1.0) > 1e-6
+        return c['reverse'] or (c['speed'] > 0 and abs(c['speed'] - 1.0) > 1e-6)
 
     def src_start(c):
         # Premiere: on a speed-changed clip in/out are in retimed frames -> convert to source time
         return files[c['fid']]['start'] + (c['cin'] * spd(c) if retimed(c) else c['cin'])
 
+    def rev_range(c):
+        # reversed clip: Premiere counts in/out from the END of the media
+        fa = files[c['fid']]
+        hi = fa['start'] + fa['dur'] - c['cin'] * spd(c)
+        return hi, hi - c['dur'] * spd(c)
+
+    def media_grid(c):
+        """Frame grid of a clip's own time (FCPX wants starts/offsets inside a clip on it)."""
+        fa = files[c['fid']]
+        if retimed(c) or not fa['has_v'] or fa['still']:
+            return None
+        return 1 / fa['frate']
+
+    def snap(x, base, g, floor=False):
+        if g is None:
+            return x
+        k = (x - base) / g
+        return base + (math.floor(k + Fraction(1, 1000)) if floor else round(k)) * g
+
     def local_start(c):
         # FCPX: with a timeMap, the clip's start is in retimed (local) time
-        return src_start(c) / spd(c) if retimed(c) else src_start(c)
+        if c['reverse']:
+            return Fraction(0)
+        if retimed(c):
+            return src_start(c) / spd(c)
+        # Premiere shows the media frame at or before the in point (floor)
+        return snap(src_start(c), files[c['fid']]['start'], media_grid(c), floor=True)
+
+    def in_parent(s, t):
+        """timeline time t -> local time of spine item s. FCPX wants the parent's start on
+        its media grid and (child offset - parent start) on the sequence grid."""
+        return s['lstart'] + snap(t - s['off'], Fraction(0), fd)
 
     spine = []
     cur = Fraction(0)
+    top_lane = max([c['track'] for c in vclips] + [0]) + 1
     for c in v1:
         if c['off'] < cur:
-            warnings['V1 ust uste binen klip / overlapping V1 clip'] += 1
+            # never drop it: lift it onto a lane above the storyline
+            warnings['V1 ust uste binen klip ust kanala alindi / overlapping V1 clip moved up'] += 1
+            c['track'] = top_lane
+            vclips_lifted.append(c)
             continue
         if c['off'] > cur:
             spine.append(dict(gap=True, off=cur, dur=c['off'] - cur, lstart=Fraction(0)))
@@ -386,6 +538,7 @@ def convert(src, dst, frm=None, to=None):
         spine.append(dict(gap=True, off=cur, dur=max(total - cur, fd), lstart=Fraction(0)))
     for s in spine:
         s['children'] = []
+        s['markers'] = []
 
     def parent_for(off):
         for s in spine:
@@ -393,17 +546,29 @@ def convert(src, dst, frm=None, to=None):
                 return s
         return spine[-1]
 
-    for c in [c for c in vclips if c['track'] > 0] + aclips:
+    for c in [c for c in vclips if c['track'] > 0] + vclips_lifted + aclips:
         parent_for(c['off'])['children'].append(c)
+    for m in seq_markers:
+        parent_for(m[0])['markers'].append(m)
 
-    def clip_xml(c, indent, lane=None, parent=None, children=()):
+    def marker_xml(indent, start, dur, name, note):
+        a = f'start="{_t(start)}" duration="{_t(dur if dur else fd)}" value={quoteattr(name)}'
+        if note:
+            a += f' note={quoteattr(note)}'
+        return f'{indent}<marker {a}/>'
+
+    def item_markers(s, indent):
+        return [marker_xml(indent, in_parent(s, m[0]), m[1], m[2], m[3])
+                for m in sorted(s['markers'], key=lambda m: m[0])]
+
+    def clip_xml(c, indent, lane=None, parent=None, children=(), extra_markers=()):
         fa = files[c['fid']]
         src_en = None
         if c['kind'] == 'video' and fa['has_a']:
             src_en = 'video'
         if c['kind'] == 'audio' and fa['has_v']:
             src_en = 'audio'
-        off = c['off'] if parent is None else parent['lstart'] + (c['off'] - parent['off'])
+        off = c['off'] if parent is None else in_parent(parent, c['off'])
         start = local_start(c)
         attrs = [f'ref="{fa["id"]}"', f'name={quoteattr(fa["label"])}', f'offset="{_t(off)}"',
                  f'start="{_t(start)}"', f'duration="{_t(c["dur"])}"']
@@ -411,25 +576,56 @@ def convert(src, dst, frm=None, to=None):
             attrs.append(f'lane="{lane}"')
         if src_en:
             attrs.append(f'srcEnable="{src_en}"')
-        if fa['has_v']:
-            attrs += ['format="r1"', 'tcFormat="NDF"']
+        if fa['has_v'] and not fa['still']:
+            attrs += [f'format="{fa["fmt"]}"', f'tcFormat="{"DF" if fa["df"] else "NDF"}"']
         if not c['enabled']:
             attrs.append('enabled="0"')
         inner = []
-        if retimed(c):
+        if c['reverse']:
+            hi, lo = rev_range(c)
+            inner.append(f'{indent}  <timeMap><timept time="0s" value="{_t(hi)}" interp="linear"/>'
+                         f'<timept time="{_t(c["dur"])}" value="{_t(lo)}" interp="linear"/></timeMap>')
+            warnings['ters klip, FCPX\'te kontrol et / reversed clip, check in FCPX'] += 1
+        elif retimed(c):
             sp = spd(c)
             # linear map 0 -> 0 that covers the clip's whole local range
             inner.append(f'{indent}  <timeMap><timept time="0s" value="0s" interp="linear"/>'
                          f'<timept time="{_t(start + c["dur"])}" value="{_t(src_start(c) + c["dur"] * sp)}" interp="linear"/></timeMap>')
             warnings['hizli/yavas klip, FCPX\'te kontrol et / speed-changed clip, check in FCPX'] += 1
-        elif abs(c['speed'] - 1.0) > 1e-6:
-            warnings['ters/negatif hiz normal alindi / reverse speed made normal'] += 1
-        if c['vol'] is not None:
-            inner.append(f'{indent}  <adjust-volume amount="{c["vol"]:.2f}dB"/>')
-        head = f'{indent}<asset-clip {" ".join(attrs)}'
-        if not inner and not children:
+        if c['kind'] == 'audio':
+            parts = ''
+            if c['fade_in'] > 0:
+                parts += f'<fadeIn type="easeIn" duration="{_t(c["fade_in"])}"/>'
+            if c['fade_out'] > 0:
+                parts += f'<fadeOut type="easeOut" duration="{_t(c["fade_out"])}"/>'
+            if parts:
+                warnings['ses gecisi fade olarak tasindi / audio transition carried as fade'] += 1
+            if c['vol_kf'] and not retimed(c):
+                parts += '<keyframeAnimation>' + ''.join(
+                    f'<keyframe time="{_t(fa["start"] + t)}" value="{v:.2f}dB"/>'
+                    for t, v in c['vol_kf']) + '</keyframeAnimation>'
+            elif c['vol_kf']:
+                warnings['ses keyframe tasinmadi / audio keyframes not carried'] += 1
+            amt = f' amount="{c["vol"]:.2f}dB"' if c['vol'] is not None and not (c['vol_kf'] and not retimed(c)) else ''
+            if parts:
+                inner.append(f'{indent}  <adjust-volume{amt}><param name="amount">{parts}</param></adjust-volume>')
+            elif amt:
+                inner.append(f'{indent}  <adjust-volume{amt}/>')
+        marks = list(extra_markers)
+        if not retimed(c):
+            lo_t, hi_t = start, start + c['dur']
+            for t, d, nm, note in c['markers']:
+                mt = snap(fa['start'] + t, fa['start'], media_grid(c))
+                if lo_t <= mt < hi_t:
+                    marks.append(marker_xml(indent + '  ', mt, d, nm, note))
+        # Final Cut crashes on a still image inside <asset-clip>; it takes it as <video>
+        tag = 'video' if fa['still'] else 'asset-clip'
+        if fa['still']:
+            attrs = [a for a in attrs if not a.startswith('srcEnable=')]
+        head = f'{indent}<{tag} {" ".join(attrs)}'
+        if not inner and not children and not marks:
             return [head + '/>']
-        return [head + '>'] + inner + list(children) + [f'{indent}</asset-clip>']
+        return [head + '>'] + inner + list(children) + marks + [f'{indent}</{tag}>']
 
     def lane_of(c):
         return c['track'] if c['kind'] == 'video' else -c['track']
@@ -440,41 +636,61 @@ def convert(src, dst, frm=None, to=None):
     w('<!DOCTYPE fcpxml>')
     w('<fcpxml version="1.10">')
     w('  <resources>')
-    w(f'    <format id="r1" name="FFVideoFormat{H}p{int(round(float(fps)))}" frameDuration="{_t(fd)}" '
-      f'width="{W}" height="{H}" colorSpace="1-1-1 (Rec. 709)"/>')
+    for (fw, fh, ffd), fid_ in formats.items():
+        nm = _fmt_name(fw, fh, None if ffd is None else 1 / ffd)
+        a = [f'id="{fid_}"'] + ([f'name="{nm}"'] if nm else [])
+        if ffd is not None:
+            a.append(f'frameDuration="{_t(ffd)}"')
+        a += [f'width="{fw}"', f'height="{fh}"', 'colorSpace="1-1-1 (Rec. 709)"']
+        w(f'    <format {" ".join(a)}/>')
     for v in files.values():
         attrs = [f'id="{v["id"]}"', f'name={quoteattr(v["label"])}', f'start="{_t(v["start"])}"',
                  f'duration="{_t(v["dur"])}"', f'hasVideo="{1 if v["has_v"] else 0}"']
         if v['has_v']:
-            attrs += ['format="r1"', 'videoSources="1"']
+            attrs += [f'format="{v["fmt"]}"', 'videoSources="1"']
         if v['has_a']:
             attrs += ['hasAudio="1"', 'audioSources="1"', f'audioChannels="{v["ch"]}"', f'audioRate="{v["sr"]}"']
         url = 'file://' + quote(v['path'], safe='/:')
         w(f'    <asset {" ".join(attrs)}>')
         w(f'      <media-rep kind="original-media" src={quoteattr(url)}/>')
         w('    </asset>')
+    if v1_trans:
+        w('    <effect id="fxCD" name="Cross Dissolve" uid="FxPlug:4731E73A-8DAC-4113-9A30-AE85B1761265"/>')
     w('  </resources>')
     w('  <library>')
     w(f'    <event name={quoteattr(seq_name)}>')
     w(f'      <project name={quoteattr(seq_name)}>')
-    w(f'        <sequence format="r1" duration="{_t(total)}" tcStart="0s" tcFormat="NDF" '
+    w(f'        <sequence format="r1" duration="{_t(total)}" tcStart="0s" tcFormat="{"DF" if seq_df else "NDF"}" '
       f'audioLayout="stereo" audioRate="48k">')
     w('          <spine>')
     ind = '            '
+    pending = sorted(v1_trans, key=lambda x: x[0])
+
+    def flush(before):
+        # a transition sits in the spine between the two items it overlaps
+        while pending and (before is None or pending[0][0] + pending[0][1] / 2 <= before):
+            o, d, nm = pending.pop(0)
+            w(f'{ind}<transition name={quoteattr(nm)} offset="{_t(o)}" duration="{_t(d)}">')
+            w(f'{ind}  <filter-video ref="fxCD" name="Cross Dissolve"/>')
+            w(f'{ind}</transition>')
+
     for s in spine:
+        flush(s['off'])
         kids = []
         for c in sorted(s['children'], key=lambda c: c['off']):
             kids += clip_xml(c, ind + '  ', lane=lane_of(c), parent=s)
+        marks = item_markers(s, ind + '  ')
         if s['gap']:
             head = f'{ind}<gap name="Gap" offset="{_t(s["off"])}" start="0s" duration="{_t(s["dur"])}"'
-            if kids:
+            if kids or marks:
                 w(head + '>')
-                out.extend(kids)
+                out.extend(kids + marks)
                 w(f'{ind}</gap>')
             else:
                 w(head + '/>')
         else:
-            out.extend(clip_xml(s['clip'], ind, children=kids))
+            out.extend(clip_xml(s['clip'], ind, children=kids, extra_markers=marks))
+    flush(None)
     w('          </spine>')
     w('        </sequence>')
     w('      </project>')
